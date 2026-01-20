@@ -89,7 +89,10 @@ export const AppEventSchema = z.discriminatedUnion("type", [
 
 export type AppEvent = z.infer<typeof AppEventSchema>;
 export type OrderCreatedEvent = z.infer<typeof OrderCreatedEventSchema>;
-export type PaymentAuthorizedEvent = z.infer<
-	typeof PaymentAuthorizedEventSchema
->;
+export type PaymentAuthorizedEvent = z.infer<typeof PaymentAuthorizedEventSchema>;
 export type DisputeOpenedEvent = z.infer<typeof DisputeOpenedEventSchema>;
+
+// Data payload types (for building events)
+export type OrderCreatedData = z.infer<typeof OrderCreatedDataSchema>;
+export type PaymentAuthorizedData = z.infer<typeof PaymentAuthorizedDataSchema>;
+export type DisputeOpenedData = z.infer<typeof DisputeOpenedDataSchema>;

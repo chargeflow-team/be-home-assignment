@@ -1,0 +1,216 @@
+version: "3.8"
+
+services:
+  # Kafka-compatible message broker (lighter than Kafka)
+  redpanda:
+    image: redpandadata/redpanda:v23.3.5
+    container_name: redpanda
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --memory=512M
+      - --reserve-memory=0M
+      - --overprovisioned
+      - --node-id=0
+      - --kafka-addr=PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:29092,OUTSIDE://localhost:9092
+      - --pandaproxy-addr=0.0.0.0:8082
+      - --advertise-pandaproxy-addr=localhost:8082
+    ports:
+      - "9092:9092"
+      - "8082:8082"
+      - "29092:29092"
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Kafka UI for debugging
+  redpanda-console:
+    image: redpandadata/console:v2.4.3
+    container_name: redpanda-console
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_BROKERS: redpanda:29092
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/ >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MongoDB
+  mongodb:
+    image: mongo:7.0
+    container_name: mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_DATABASE: chargeflow
+    volumes:
+      - mongodb_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PostgreSQL
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: chargeflow
+      POSTGRES_PASSWORD: chargeflow
+      POSTGRES_DB: chargeflow
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chargeflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Topic initialization
+  init-kafka:
+    image: redpandadata/redpanda:v23.3.5
+    container_name: init-kafka
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command: |
+      "
+      rpk topic create orders.v1 --brokers redpanda:29092
+      rpk topic create payments.v1 --brokers redpanda:29092
+      rpk topic create disputes.v1 --brokers redpanda:29092
+      echo 'Topics created.'
+      "
+
+  # Event generator - publishes test events
+  event-generator:
+    build:
+      context: .
+      dockerfile: ./services/event-generator/Dockerfile
+    container_name: event-generator
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      init-kafka:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BROKERS: redpanda:29092
+      TOPIC_ORDERS: orders.v1
+      TOPIC_PAYMENTS: payments.v1
+      TOPIC_DISPUTES: disputes.v1
+      EVENT_INTERVAL_MS: 5000
+      ENABLE_DUPLICATES: "true"
+      DUPLICATE_RATE: "0.1"
+      ENABLE_OUT_OF_ORDER: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "ps aux | grep -q '[n]ode'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # risk-engine service (candidate implements)
+  risk-engine:
+    build:
+      context: .
+      dockerfile: ./services/risk-engine/Dockerfile
+    container_name: risk-engine
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    ports:
+      - "3001:3001"
+    environment:
+      NODE_ENV: development
+      PORT: 3001
+      KAFKA_BROKERS: redpanda:29092
+      KAFKA_GROUP_ID: risk-engine-group
+      TOPIC_ORDERS: orders.v1
+      TOPIC_PAYMENTS: payments.v1
+      MONGODB_URI: mongodb://mongodb:27017/chargeflow
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: chargeflow
+      POSTGRES_PASSWORD: chargeflow
+      POSTGRES_DB: chargeflow
+      RISK_SCORE_TTL_MINUTES: 15
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/health >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # dispute-responder service (candidate implements)
+  dispute-responder:
+    build:
+      context: .
+      dockerfile: ./services/dispute-responder/Dockerfile
+    container_name: dispute-responder
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    ports:
+      - "3002:3002"
+    environment:
+      NODE_ENV: development
+      PORT: 3002
+      KAFKA_BROKERS: redpanda:29092
+      KAFKA_GROUP_ID: dispute-responder-group
+      TOPIC_DISPUTES: disputes.v1
+      MONGODB_URI: mongodb://mongodb:27017/chargeflow
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: chargeflow
+      POSTGRES_PASSWORD: chargeflow
+      POSTGRES_DB: chargeflow
+      RISK_ENGINE_URL: http://risk-engine:3001
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3002/health >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # frontend service (candidate implements)
+  # NOTE: This is intentionally a placeholder. The candidate is expected to create the frontend from scratch.
+  #
+  # Example shape (uncomment once you implement the frontend in `apps/frontend`):
+  #
+  # frontend:
+  #   build:
+  #     context: .
+  #     dockerfile: ./apps/frontend/Dockerfile
+  #   container_name: frontend
+  #   depends_on:
+  #     risk-engine:
+  #       condition: service_healthy
+  #     dispute-responder:
+  #       condition: service_healthy
+  #   ports:
+  #     - "5173:5173"
+  #   environment:
+  #     # Inside compose, call services by name
+  #     VITE_RISK_ENGINE_BASE_URL: http://risk-engine:3001
+  #     VITE_DISPUTE_RESPONDER_BASE_URL: http://dispute-responder:3002
+
+volumes:
+  mongodb_data:
+  postgres_data:

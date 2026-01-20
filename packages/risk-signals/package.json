@@ -1,0 +1,14 @@
+{
+  "name": "@chargeflow/risk-signals",
+  "version": "0.1.0",
+  "description": "Deterministic risk scoring helpers for the take-home.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "license": "UNLICENSED",
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4"
+  }
+}
